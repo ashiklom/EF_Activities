@@ -1,0 +1,225 @@
+---
+title: "Exercise 2: From models to forecasts"
+author: "Alexey Shiklomanov"
+---
+
+**Problem 1: Generate plots of the logistic growth model at r = 1.95, 2.05, 
+2.5, and 2.8 Describe the trajectory observed in each case.**
+
+Define logistic function.
+```{r}
+logistic <- function(r, K, n0, NT){
+    n <- rep(n0, NT)
+    for(t in 2:NT){
+        n[t] <- n[t-1] + r*n[t-1] * (1-n[t-1]/K)
+    }
+    return(n)
+}
+```
+
+Set parameters
+```{r}
+rvec <- c(1.95, 2.05, 2.5, 2.8)
+K <- 10
+n0 <- 0.1
+NT <- 30
+```
+
+Create plots.
+```{r}
+par(mfrow=c(2,2))
+for(r in rvec){
+    tt <- 1:NT
+    n <- logistic(r, K, n0, NT)
+    main <- sprintf("r = %.2f", r)
+    plot(tt, n, type='l', main=main,
+         xlab="Time", ylab="Population")
+}
+
+```
+
+In each case, the plot grows rapidly early on before reaching values around 
+*K*.  At that point, the plot oscillates depending on the value of *r*. For low 
+values, the oscillations are relatively muted, and for the lowest *r* (1.95), 
+population converges to a stable state. For the second lowest *r*, the 
+population oscillates evenly and apparently forever around *K*. At increasingly 
+large values of *r*, the oscillations grow in magnitude and become less even.
+
+
+**Problem 2: Choose another probability distribution and generate graphs of 
+the probability density function, the cumulative distribution function, the 
+quantile function, and a histogram of samples from that distribution.**
+
+
+For this exercise, I will use the gamma. Because I'm all about that Gibbs 
+sampling for normal distrubions with known means.
+
+```{r}
+# Set gamma parameters
+shape <- 3
+scale.p <- 5
+xx <- seq(0, 60, by=1)
+qq <- seq(0, 1, by=0.05)
+nsamp <- 1e5
+par(mfrow=c(2,2), mar=c(2,6,2,2))
+plot(xx, dgamma(xx, shape, scale=scale.p), type='l',
+     xlab="X", ylab="P(X)", main="Gamma PDF")
+plot(xx, pgamma(xx, shape, scale=scale.p), type='l',
+     xlab="X", ylab=expression(integral(P(X)*dx, -infinity, X)), main="Gamma CDF")
+plot(qq, qgamma(qq, shape, scale=scale.p), type='l',
+     xlab="X", ylab=expression(CDF^-1), main="Gamma Q")
+hist(rgamma(nsamp, shape, scale=scale.p), xlab="X", ylab="Counts",
+     main=sprintf("Gamma samples (n = %d)", nsamp))
+```
+
+**Problem 3 Numerically transform a lognormal(meanlog=0,sdlog=0.5) through 
+sin(x) using Monte Carlo simulation. Include histograms of the original and 
+transformed distributions. Report the mean, median, and 95% CI for both 
+distributions and indicate these values on the histograms.**
+
+Define stats and plotting function
+```{r}
+statplot <- function(samples, ...){
+    s.mean <- mean(samples)
+    s.q <- quantile(samples, c(0.025, 0.5, 0.975))
+    hist(samples, ...)
+    abline(v = s.q, lty=c(2,1,2), lwd=3, col="orange")
+    abline(v = s.mean, lty=3, lwd=3)
+}
+```
+
+```{r}
+mu <- 0
+sigma <- 0.5
+nsamp <- 1e5
+lnorm <- rlnorm(nsamp, mu, sigma)
+lnorm.sin <- sin(lnorm)
+par(mfrow=c(1,2))
+statplot(lnorm, main="Lognormal samples")
+statplot(lnorm.sin, main="Sin(lognormal) samples")
+```
+
+# Parameter error
+
+First, set the parameter variabilities.
+```{r}
+r <- 1.95
+K <- 10
+n0 <- 0.1
+NT <- 30
+r.sd = 0.2     ## standard deviation on r
+K.sd = 1.0     ## standard deviation on K
+NE = 1000      ## Ensemble size
+```
+
+Then, run the ensemble analysis. Note that for high *r* values, the model 
+sometimes generates negative values, which are impossible for populations.  
+Therefore, I've constained the model to have a hard minimum at 0, which 
+indicates the population has undergone total collapse.
+
+```{r}
+n = matrix(n0,NE,NT)   # storage for all simulations
+rE = rnorm(NE,r,r.sd)  # sample of r
+KE = rnorm(NE,K,K.sd)  # sample of K
+for(i in 1:NE){        # loop over samples
+    n[i,] <- logistic(rE[i], KE[i], n0, NT)
+}
+n[n < 0] <- 0
+n.stats = apply(n,2,quantile,c(0.025,0.5,0.975))
+```
+
+**Problem 4: Plot histograms of the samples of r and K used for the 
+simulation.**
+
+```{r}
+par(mfrow=c(1,2))
+hist(rE, main="Samples of r")
+hist(KE, main="Samples of KE")
+```
+
+**Problem 5: Plot a sample of 10 different trajectories from your ensemble (on 
+one graph).**
+
+```{r}
+n.rows <- sample(1:1000, 10)
+n.plot <- n[n.rows,]
+matplot(t(n.plot), type='l', xlab='Time', ylab="Populaiton",
+        main="10 realizations of logistic model")
+```
+
+**Problem 6: Plot a histogram of your population forecast at time = 15.**
+
+```{r}
+hist(n[,15], main="Population at t=15")
+```
+
+**Problem 7: Plot the median trajectory and 95% CI.**
+
+Base R graphics doesn't have an intuitive way of doing transparency, so I have 
+to plot the `ciEnvelope` first. But, I can't call `polygon` on a plot that 
+doesn't exist yet. So, I first set up a blank plot (`type='n'`) with the right 
+specifications, then plot the confidence envelope on it, and finally draw the 
+median line on top of everything.
+
+```{r}
+ciEnvelope <- function(x,ylo,yhi,col="lightgrey",...){
+    xcoords <- c(x, rev(x), x[1])
+    ycoords <- c(ylo, rev(yhi), ylo[1])
+  polygon(xcoords, ycoords, border = NA, col=col,...) 
+}
+plot(0, type='n', xlab='Time', ylab='Population',
+     main = 'Median and 95% CI of logistic model',
+     xlim=c(0,NT), ylim=range(n.stats))
+ciEnvelope(1:NT, n.stats[1,], n.stats[3,])
+lines(n.stats[2,], type='l')
+```
+
+**Problem 8: Add a 50% CI (i.e. 25% to 75%) to the plot. Note that you'll have 
+to both compute the summary statistics for this interval and plot the envelope 
+in a different color.**
+
+```{r}
+n.stats2 <- apply(n, 2, quantile, c(0.025, 0.25, 0.5, 0.75, 0.975))
+plot(0, type='n', xlab='Time', ylab='Population',
+     main = 'Median and 50% and 95% CIs of logistic model',
+     xlim=c(0,NT), ylim=range(n.stats))
+ciEnvelope(1:NT, n.stats2[1,], n.stats2[5,], col="lightgrey")
+ciEnvelope(1:NT, n.stats2[2,], n.stats2[4,], col="red1")
+lines(n.stats2[3,], type='l', lwd=2)
+```
+
+# Extra credit: Initial conditions
+
+```{r}
+ic.analysis <- function(r){
+    n0.sd = 0.6
+    n0s = rlnorm(NE,log(n0),n0.sd)
+    n = matrix(n0s,NE,NT)
+    for(i in 1:NE){
+        n[i,] <- logistic(r, K, n0s[i], NT)
+    }
+    n[n < 0] <- 0
+    n.stats <- apply(n, 2, quantile, c(0.025, 0.5, 0.975))
+    plot(0, type='n', xlab='Time', ylab='Population',
+        main = sprintf('r = %.2f', r),
+        xlim=c(0,NT), ylim=range(n.stats))
+    ciEnvelope(1:NT, n.stats[1,], n.stats[3,])
+    lines(n.stats[2,], type='l')
+}
+```
+
+**Problem 9: Plot the median & 95% interval.**
+
+```{r}
+r = 0.3
+ic.analysis(r)
+```
+
+**Problem 10: Repeat with r equal to 1.95, 2.05, and 2.8.**
+
+```{r}
+par(mfrow=c(2,2))
+for(r in rvec){
+    ic.analysis(r)
+}
+```
