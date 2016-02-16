@@ -1,0 +1,168 @@
+---
+title: "Exercise 3: Tools for big data"
+author: "Alexey Shiklomanov"
+---
+
+First, load the required packages. I'm going to work with `data.table` rather 
+than default `data.frame`s, so I'll load that package as well.
+
+```{r}
+library(RCurl)
+library(XML)
+library(ncdf4)
+library(devtools)
+library(MODISTools)
+library(data.table)
+library(bit64)  # For reading in long integer data, specifically for MODIS time code
+```
+
+**Question 1: Using the US Forest Service's Forest Inventory and Analysis (FIA) 
+data set, plot the rank vs log(abundance) curve for tree seedling counts from 
+Rhode Island.**
+
+```{r}
+usfs.fia <- fread('http://apps.fs.fed.us/fiadb-downloads/RI_SEEDLING.CSV', header=TRUE)
+usfs.counts <- usfs.fia[, log(sum(TREECOUNT, na.rm=TRUE)), by=SPCD][order(V1,decreasing=TRUE)]
+plot(usfs.counts[,V1], type='l', xlab='Rank', ylab='Log abundance',
+     main='Rank abundance curve')
+```
+
+**Question 2: Create a sorted table of how many FLUXNET eddy-covariance towers 
+are in each country according to the website.**
+
+```{r}
+fluxnet.html <- getURL('http://fluxnet.ornl.gov/site_status')
+fluxnet.table <- data.table(readHTMLTable(fluxnet.html)[[1]])
+```
+
+What follows is some advanced `data.table` syntax. `setnames` is used to rename 
+the columns so that I'm not dealing with names that have spaces in them. Then, 
+I reassign the first two columns to be characters rather than factors. Third, I 
+loop over the remaining columns and assign (`set`) the values to numeric. 
+Finally, I sum over each row to get the number of sites that are not `NA`.
+
+```{r}
+setnames(fluxnet.table, c("Site Name", "FLUXNET ID"), c('site.name', 'fluxnet.id'))
+fluxnet.table[, site.name := as.character(site.name)][, fluxnet.id := as.character(fluxnet.id)]
+for(j in 3:ncol(fluxnet.table)){
+    set(fluxnet.table, j = j, value=as.numeric(as.character(fluxnet.table[[j]])))
+}
+fluxnet.table[, country := toupper(gsub("([[:alpha:]]{2})-.*", '\\1', fluxnet.id))]
+print(fluxnet.table[, .N, by=country][order(N, decreasing=TRUE)])
+```
+
+**Question 3: Within the object myCode, find all the lines that begin with the comment character, #**.
+
+```{r}
+mycode <- readLines("../Exercise_03_BigData.Rmd")
+mycode[grep('^#', mycode)]
+```
+
+**Question 4: Plot Boston 2004 air temperature using NCDF from website**
+
+```{r}
+driver.nc <- nc_open('http://thredds.daac.ornl.gov/thredds/dodsC/ornldaac/1220/mstmip_driver_global_hd_climate_tair_2004_v1.nc4')
+lat <- ncvar_get(driver.nc, 'lat')
+lon <- ncvar_get(driver.nc, 'lon')
+Time <- ncvar_get(driver.nc, 'time')
+length.time <- length(Time)
+boston.lat <- 42.3601
+boston.lon <- -71.0589
+# Find closest grid cell
+boston.lat.ind <- which(abs(lat-boston.lat) == min(abs(lat - boston.lat)))
+boston.lon.ind <- which(abs(lon-boston.lon) == min(abs(lon - boston.lon)))
+# Get air temperature
+boston.temperature <- ncvar_get(driver.nc, 'tair',
+                                c(boston.lon.ind, boston.lat.ind, 1),
+                                c(1,1,length.time))
+plot(boston.temperature, type='l')
+nc_close(driver.nc)
+```
+
+**Question 5: Plot EVI versus time and compare to the CO2 flux observations.**
+
+Get MODIS data
+```{r}
+MODISSubsets(data.frame(lat=46.0827,long=-89.9792,start.date=2012,end.date=2012),
+  Product="MOD13Q1",Bands="250m_16_days_EVI",Size=c(1,1),StartDate=TRUE)
+modis.evi <- fread(list.files(pattern=".asc")[1], header=FALSE, na.strings="-3000")
+evi.cols <- 11:91
+modis.evi.avg <- modis.evi[, list(Date = as.POSIXct(substr(V10, 1, 7), format="%Y%j"),
+                                  evi = rowMeans(.SD)), .SDcols=10:91]
+```
+
+Get flux data.
+```{r}
+system("wget http://flux.aos.wisc.edu/data/cheas/wlef/netcdf/US-PFa-WLEF-TallTowerClean-2012-L0-vFeb2013.nc")
+wlef <- nc_open("US-PFa-WLEF-TallTowerClean-2012-L0-vFeb2013.nc")
+NEE <- ncvar_get(wlef,"NEE_co2")    ## NEE data
+flux.time.raw <- ncvar_get(wlef,"time")  # day of year
+flux.time.secs <- flux.time.raw * 86400     # Convert to seconds
+flux.datetime <- as.POSIXlt(flux.time.secs, origin=ISOdatetime(2012, 01, 01, 0, 0, 0))
+nc_close(wlef)
+```
+
+Plot both on same axes.
+```{r}
+xlims <- as.POSIXct(ISOdatetime(2012:2013, 01, 01, 0, 0, 0))
+par(mar=c(4,4,1,4))
+plot(evi ~ Date, data=modis.evi.avg, xlim=xlims, type='l')
+for(i in 1:3){
+    par(new=TRUE)
+    plot(flux.datetime, filter(NEE[i,], rep(1/24,24)), 
+         xlim=xlims, type='l', col=i+1, xaxt='n', yaxt='n', xlab='', ylab='')
+}
+axis(4)
+mtext(side=4, line=3, 'NEE')
+```
+
+The result is a typical temperature forest seasonal pattern. During the summer, 
+photosynthesis is greatest, associated with high EVI and strongly negative NEE. 
+Then, into the fall, photosynthesis is reduced (increased NEE), followed by 
+leaf senscence (declining EVI).
+
+**Question 6**:
+Imagine you are working with the full FIA database and want to ensure that the data you are using is always up to date. However, the total size of the database is large, the USFS server is slow, and you don't want to completely delete and reinstall the database every day when only a small percentage of the data changes in any update. 
+
+* Write out the pseudocode/outline for how to keep the files up to date
+* Write out what the cron table would look like to schedule this job (assume the update only needs to be done weekly)
+
+## Pseudocode
+
+```
+###### File: smart.merge.R  ######
+### Check the USGS server to get the last update time:
+USGS_last_change = date -r USGS_FIA
+
+### If the USGS FIA hasn't changed since the last update, don't do anything:
+if !(USGS_last_change > date -r MY_FIA); end program
+
+### If there is a change, download only the USGS FIA ID column (assuming they 
+### must have an immutable ID column corresponding to every new observation, 
+### like a Git SHA):
+usgs.id <- fread(USGS_FIA, select_columns = ID)
+
+### Compare to my ID columns to identify changes:
+new.id <- which(!(usgs.id %in% my.id))
+delete.id <- which(!(my.id %in% usgs.id))
+
+### Delete old ID, download new ID, and merge.
+my.fia[delete.id,] <- NULL
+usgs.update <- fread(usgs.id, select_rows = new.id)
+my.fia <- rbind(my.fia, usgs.update) 
+
+
+###### File: full.reset.R ######
+### Less often (e.g. once per month), completely redownload database in case 
+### there was a mistake somewhere.
+rm(my.fia)
+my.fia <- fread(USGS_FIA)
+```
+
+## Cron table
+
+```
+MAILTO=ashiklom@bu.edu
+42 3 * * sat Rscript /path/to/scripts/smart.merge.R
+42 3 1 * * Rscript /path/to/scripts/full.reset.R
+```
