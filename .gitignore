@@ -12,3 +12,8 @@
 *.html
 *.md
 *.pdf
+
+## large folder in data
+data/TUCSON
+unmatched.txt
+
